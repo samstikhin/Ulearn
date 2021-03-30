@@ -17,6 +17,7 @@ namespace uLearn.Web.Controllers
 	public class CertificatesController : Controller
 	{
 		private readonly CertificatesRepo certificatesRepo;
+		private readonly UserRolesRepo userRolesRepo;
 		private readonly ULearnUserManager userManager;
 		private readonly CourseManager courseManager;
 		private readonly CertificateGenerator certificateGenerator;
@@ -31,6 +32,7 @@ namespace uLearn.Web.Controllers
 			this.courseManager = courseManager;
 
 			certificatesRepo = new CertificatesRepo(db);
+			userRolesRepo = new UserRolesRepo(db);
 			userManager = new ULearnUserManager(db);
 			certificateGenerator = new CertificateGenerator(db, courseManager);
 		}
@@ -88,7 +90,7 @@ namespace uLearn.Web.Controllers
 			if (certificate == null)
 				return HttpNotFound();
 
-			if (certificate.IsPreview && !User.HasAccessFor(certificate.Template.CourseId, CourseRole.Instructor))
+			if (certificate.IsPreview && !userRolesRepo.HasUserAccessToCourse(User.Identity.GetUserId(), certificate.Template.CourseId, CourseRole.Instructor))
 				return HttpNotFound();
 
 			var course = courseManager.GetCourse(certificate.Template.CourseId);

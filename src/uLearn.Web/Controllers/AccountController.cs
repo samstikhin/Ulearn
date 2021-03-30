@@ -9,15 +9,11 @@ using System.Web.Configuration;
 using System.Web.Mvc;
 using Database;
 using Database.DataContexts;
-using Database.Extensions;
 using Database.Models;
-using JetBrains.Annotations;
 using Microsoft.AspNet.Identity;
-using uLearn.Web.Extensions;
 using uLearn.Web.FilterAttributes;
 using uLearn.Web.Models;
 using Ulearn.Common.Extensions;
-using Ulearn.Core;
 using Ulearn.Core.Configuration;
 using Ulearn.Core.Courses;
 using Vostok.Logging.Abstractions;
@@ -82,7 +78,7 @@ namespace uLearn.Web.Controllers
 		[ChildActionOnly]
 		public async Task<ActionResult> ListPartial(UserSearchQueryModel queryModel)
 		{
-			var userRolesByEmail = User.IsSystemAdministrator() ? usersRepo.FilterUsersByEmail(queryModel) : null;
+			var userRolesByEmail = userRolesRepo.IsSystemAdministrator(User.Identity.GetUserId()) ? usersRepo.FilterUsersByEmail(queryModel) : null;
 			var userRoles = usersRepo.FilterUsers(queryModel);
 			var model = await GetUserListModel(userRolesByEmail.EmptyIfNull().Concat(userRoles).DistinctBy(r => r.UserId).ToList());
 
@@ -91,28 +87,35 @@ namespace uLearn.Web.Controllers
 
 		private async Task<UserListModel> GetUserListModel(List<UserRolesInfo> users)
 		{
+			var currentUserId = User.Identity.GetUserId();
+			var isSystemAdministrator = userRolesRepo.IsSystemAdministrator(currentUserId);
 			var coursesForUsers = userRolesRepo.GetCoursesForUsers();
 
-			var courses = User.GetControllableCoursesId().ToList();
-
-			var currentUserId = User.Identity.GetUserId();
+			var courses = GetControllableCoursesId(currentUserId).ToList();
 			var userIds = users.Select(u => u.UserId).ToList();
 			var tempCoursesIds = tempCoursesRepo.GetTempCourses()
 				.Select(t => t.CourseId)
 				.ToHashSet();
 			var model = new UserListModel
 			{
-				CanToggleRoles = User.HasAccess(CourseRole.CourseAdmin),
-				ShowDangerEntities = User.IsSystemAdministrator(),
+				CanToggleRoles = userRolesRepo.HasAccess(currentUserId, CourseRole.CourseAdmin),
+				ShowDangerEntities = isSystemAdministrator,
 				Users = users.Select(user => GetUserModel(user, coursesForUsers, courses, tempCoursesIds)).ToList(),
-				UsersGroups = groupsRepo.GetUsersGroupsNamesAsStrings(courses, userIds, User, actual: true, archived: false),
-				UsersArchivedGroups = groupsRepo.GetUsersGroupsNamesAsStrings(courses, userIds, User, actual: false, archived: true),
+				UsersGroups = groupsRepo.GetUsersGroupsNamesAsStrings(courses, userIds, currentUserId, actual: true, archived: false),
+				UsersArchivedGroups = groupsRepo.GetUsersGroupsNamesAsStrings(courses, userIds, currentUserId, actual: false, archived: true),
 				CanViewAndToggleCourseAccesses = false,
-				CanViewAndToogleSystemAccesses = User.IsSystemAdministrator(),
-				CanViewProfiles = systemAccessesRepo.HasSystemAccess(currentUserId, SystemAccessType.ViewAllProfiles) || User.IsSystemAdministrator(),
+				CanViewAndToogleSystemAccesses = isSystemAdministrator,
+				CanViewProfiles = systemAccessesRepo.HasSystemAccess(currentUserId, SystemAccessType.ViewAllProfiles) || isSystemAdministrator,
 			};
 
 			return model;
+		}
+
+		private IEnumerable<string> GetControllableCoursesId(string userId)
+		{
+			if (!userRolesRepo.IsSystemAdministrator(userId))
+				return userRolesRepo.GetCoursesIdFor(userId, CourseRole.Instructor);
+			return WebCourseManager.Instance.GetCourses().Select(course => course.Id);
 		}
 
 		private UserModel GetUserModel(UserRolesInfo userRoles, Dictionary<string, Dictionary<CourseRole, List<string>>> coursesForUsers,
@@ -232,8 +235,8 @@ namespace uLearn.Web.Controllers
 		{
 			var comment = Request.Form["comment"];
 			var currentUserId = User.Identity.GetUserId();
-			var isCourseAdmin = User.HasAccessFor(courseId, CourseRole.CourseAdmin);
-			if ((userManager.FindById(userId) == null || userId == currentUserId) && (!isCourseAdmin || role == CourseRole.CourseAdmin) && !User.IsSystemAdministrator())
+			var isCourseAdmin = userRolesRepo.HasUserAccessToCourse(currentUserId, courseId, CourseRole.CourseAdmin);
+			if ((userManager.FindById(userId) == null || userId == currentUserId) && (!isCourseAdmin || role == CourseRole.CourseAdmin) && !userRolesRepo.IsSystemAdministrator(currentUserId))
 				return Json(new { status = "error", message = "Вы не можете изменить эту роль у самих себя." });
 
 			var canAddInstructors = coursesRepo.HasCourseAccess(currentUserId, courseId, CourseAccessType.AddAndRemoveInstructors);
@@ -312,7 +315,7 @@ namespace uLearn.Web.Controllers
 			if (user == null)
 				return HttpNotFound();
 
-			if (!systemAccessesRepo.HasSystemAccess(User.Identity.GetUserId(), SystemAccessType.ViewAllProfiles) && !User.IsSystemAdministrator())
+			if (!systemAccessesRepo.HasSystemAccess(User.Identity.GetUserId(), SystemAccessType.ViewAllProfiles) && !userRolesRepo.IsSystemAdministrator(User.Identity.GetUserId()))
 				return HttpNotFound();
 
 			var logins = await userManager.GetLoginsAsync(userId);
@@ -327,8 +330,9 @@ namespace uLearn.Web.Controllers
 				.ToHashSet();
 			var certificates = certificatesRepo.GetUserCertificates(user.Id).OrderBy(c => allCourses.GetOrDefault(c.Template.CourseId)?.Title ?? "<курс удалён>").ToList();
 
-			var courseGroups = userCourses.ToDictionary(c => c.Id, c => groupsRepo.GetUserGroupsNamesAsString(c.Id, userId, User, actual: true, archived: false, maxCount: 10));
-			var courseArchivedGroups = userCourses.ToDictionary(c => c.Id, c => groupsRepo.GetUserGroupsNamesAsString(c.Id, userId, User, actual: false, archived: true, maxCount: 10));
+			var currentUserId = User.Identity.GetUserId();
+			var courseGroups = userCourses.ToDictionary(c => c.Id, c => groupsRepo.GetUserGroupsNamesAsString(c.Id, userId, currentUserId, actual: true, archived: false, maxCount: 10));
+			var courseArchivedGroups = userCourses.ToDictionary(c => c.Id, c => groupsRepo.GetUserGroupsNamesAsString(c.Id, userId, currentUserId, actual: false, archived: true, maxCount: 10));
 			var coursesWithRoles = (await userRolesRepo.GetUserRolesHistory(userId)).Select(x => x.CourseId.ToLower()).Distinct().ToList();
 			var coursesWithAccess = (await coursesRepo.GetUserAccessHistory(userId)).Select(x => x.CourseId.ToLower()).Distinct().ToList();
 
@@ -446,7 +450,7 @@ namespace uLearn.Web.Controllers
 			}
 
 			ViewBag.IsStatusError = message?.GetAttribute<IsErrorAttribute>()?.IsError ?? IsErrorAttribute.DefaultValue;
-			ViewBag.HasLocalPassword = ControllerUtils.HasPassword(userManager, User);
+			ViewBag.HasLocalPassword = ControllerUtils.HasPassword(userManager, User.Identity.GetUserId());
 			ViewBag.ReturnUrl = Url.Action("Manage");
 			return View();
 		}
@@ -457,14 +461,15 @@ namespace uLearn.Web.Controllers
 		[HandleHttpAntiForgeryException]
 		public async Task<ActionResult> Manage(ManageUserViewModel model)
 		{
-			var hasPassword = ControllerUtils.HasPassword(userManager, User);
+			var userId = User.Identity.GetUserId();
+			var hasPassword = ControllerUtils.HasPassword(userManager, userId);
 			ViewBag.HasLocalPassword = hasPassword;
 			ViewBag.ReturnUrl = Url.Action("Manage");
 			if (hasPassword)
 			{
 				if (ModelState.IsValid)
 				{
-					var result = await userManager.ChangePasswordAsync(User.Identity.GetUserId(), model.OldPassword, model.NewPassword);
+					var result = await userManager.ChangePasswordAsync(userId, model.OldPassword, model.NewPassword);
 					if (result.Succeeded)
 					{
 						return RedirectToAction("Manage", new { Message = ManageMessageId.PasswordChanged });
@@ -485,7 +490,7 @@ namespace uLearn.Web.Controllers
 
 				if (ModelState.IsValid)
 				{
-					var result = await userManager.AddPasswordAsync(User.Identity.GetUserId(), model.NewPassword);
+					var result = await userManager.AddPasswordAsync(userId, model.NewPassword);
 					if (result.Succeeded)
 					{
 						return RedirectToAction("Manage", new { Message = ManageMessageId.PasswordSet });
@@ -534,11 +539,12 @@ namespace uLearn.Web.Controllers
 		[ChildActionOnly]
 		public ActionResult RemoveAccountList()
 		{
-			var linkedAccounts = userManager.GetLogins(User.Identity.GetUserId());
-			var user = userManager.FindById(User.Identity.GetUserId());
+			var userId = User.Identity.GetUserId();
+			var linkedAccounts = userManager.GetLogins(userId);
+			var user = userManager.FindById(userId);
 
 			ViewBag.User = user;
-			ViewBag.ShowRemoveButton = ControllerUtils.HasPassword(userManager, User) || linkedAccounts.Count > 1;
+			ViewBag.ShowRemoveButton = ControllerUtils.HasPassword(userManager, userId) || linkedAccounts.Count > 1;
 
 			return PartialView("_RemoveAccountPartial", linkedAccounts);
 		}
@@ -608,7 +614,7 @@ namespace uLearn.Web.Controllers
 		public PartialViewResult ChangeDetailsPartial()
 		{
 			var user = userManager.FindByName(User.Identity.Name);
-			var hasPassword = ControllerUtils.HasPassword(userManager, User);
+			var hasPassword = ControllerUtils.HasPassword(userManager, User.Identity.GetUserId());
 
 			return PartialView(new UserViewModel
 			{

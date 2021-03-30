@@ -2,16 +2,12 @@
 using System.Collections.Generic;
 using System.Data.Entity;
 using System.Linq;
-using System.Security.Principal;
 using System.Threading.Tasks;
-using Database.Extensions;
 using Database.Models;
 using JetBrains.Annotations;
 using Vostok.Logging.Abstractions;
-using Microsoft.AspNet.Identity;
 using Ulearn.Common;
 using Ulearn.Common.Extensions;
-using Ulearn.Core;
 using Ulearn.Core.Courses;
 using Ulearn.Core.Courses.Slides.Exercises;
 using Ulearn.Core.Courses.Slides.Quizzes;
@@ -29,6 +25,8 @@ namespace Database.DataContexts
 		private readonly UserQuizzesRepo userQuizzesRepo;
 		private readonly VisitsRepo visitsRepo;
 		private readonly UserRolesRepo userRolesRepo;
+		private readonly SystemAccessesRepo systemAccessesRepo;
+		private readonly CoursesRepo coursesRepo;
 
 		private readonly WebCourseManager courseManager;
 
@@ -41,13 +39,15 @@ namespace Database.DataContexts
 			userQuizzesRepo = new UserQuizzesRepo(db);
 			visitsRepo = new VisitsRepo(db);
 			userRolesRepo = new UserRolesRepo(db);
+			systemAccessesRepo = new SystemAccessesRepo(db);
+			coursesRepo = new CoursesRepo(db);
 		}
 
-		public bool CanUserSeeAllCourseGroups(IPrincipal user, string courseId)
+		public bool CanUserSeeAllCourseGroups(string userId, string courseId)
 		{
-			return user.HasAccessFor(courseId, CourseRole.CourseAdmin) ||
-					user.HasSystemAccess(SystemAccessType.ViewAllGroupMembers) ||
-					user.HasCourseAccess(courseId, CourseAccessType.ViewAllGroupMembers);
+			return userRolesRepo.HasUserAccessToCourse(userId, courseId, CourseRole.CourseAdmin) ||
+				systemAccessesRepo.HasSystemAccess(userId, SystemAccessType.ViewAllGroupMembers) ||
+				coursesRepo.HasCourseAccess(userId, courseId, CourseAccessType.ViewAllGroupMembers);
 		}
 
 		public async Task<Group> CreateGroup(string courseId, string name, string ownerId, bool isManualCheckingEnabled = false, bool isManualCheckingEnabledForOldSolutions = false)
@@ -334,37 +334,35 @@ namespace Database.DataContexts
 			return groups;
 		}
 
-		public bool IsGroupAvailableForUser(int groupId, IPrincipal user)
+		public bool IsGroupAvailableForUser(int groupId, string userId)
 		{
 			var group = FindGroupById(groupId);
 			if (group == null)
 				return false;
 			/* Course admins can see all groups */
-			if (CanUserSeeAllCourseGroups(user, group.CourseId))
+			if (CanUserSeeAllCourseGroups(userId, group.CourseId))
 				return true;
 
-			if (!user.HasAccessFor(group.CourseId, CourseRole.Instructor))
+			if (!userRolesRepo.HasUserAccessToCourse(userId, group.CourseId, CourseRole.Instructor))
 				return false;
 
-			var userId = user.Identity.GetUserId();
 			var hasAccess = db.GroupAccesses.Any(a => a.UserId == userId && a.GroupId == groupId && a.IsEnabled);
 			return !group.IsDeleted && (group.OwnerId == userId || hasAccess);
 		}
 
-		public List<Group> GetAvailableForUserGroups(string courseId, IPrincipal user, bool includeArchived = false)
+		public List<Group> GetAvailableForUserGroups(string courseId, string userId, bool includeArchived = false)
 		{
-			if (!user.HasAccessFor(courseId, CourseRole.Instructor))
+			if (!userRolesRepo.HasUserAccessToCourse(userId, courseId, CourseRole.Instructor))
 				return new List<Group>();
 
-			return GetAvailableForUserGroups(new List<string> { courseId }, user, includeArchived);
+			return GetAvailableForUserGroups(new List<string> { courseId }, userId, includeArchived);
 		}
 
-		public List<Group> GetAvailableForUserGroups(List<string> coursesIds, IPrincipal user, bool includeArchived = false)
+		public List<Group> GetAvailableForUserGroups(List<string> coursesIds, string userId, bool includeArchived = false)
 		{
-			var coursesWhereUserCanSeeAllGroups = coursesIds.Where(id => CanUserSeeAllCourseGroups(user, id)).ToList();
+			var coursesWhereUserCanSeeAllGroups = coursesIds.Where(id => CanUserSeeAllCourseGroups(userId, id)).ToList();
 			var otherCourses = new HashSet<string>(coursesIds).Except(coursesWhereUserCanSeeAllGroups).ToList();
 
-			var userId = user.Identity.GetUserId();
 			var groupsWithAccess = new HashSet<int>(db.GroupAccesses.Where(a => a.UserId == userId && a.IsEnabled).Select(a => a.GroupId));
 			var groups = db.Groups.Where(g => !g.IsDeleted && (includeArchived || !g.IsArchived) &&
 											(
@@ -382,10 +380,8 @@ namespace Database.DataContexts
 				.ToList();
 		}
 
-		public List<Group> GetMyGroupsFilterAccessibleToUser(string courseId, IPrincipal user, bool includeArchived = false)
+		public List<Group> GetMyGroupsFilterAccessibleToUser(string courseId, string userId, bool includeArchived = false)
 		{
-			var userId = user.Identity.GetUserId();
-
 			var accessableGroupsIds = db.GroupAccesses.Where(a => a.Group.CourseId == courseId && a.UserId == userId && a.IsEnabled).Select(a => a.GroupId);
 
 			var groups = db.Groups.Where(g => g.CourseId == courseId && !g.IsDeleted && (g.OwnerId == userId || accessableGroupsIds.Contains(g.Id)));
@@ -430,22 +426,9 @@ namespace Database.DataContexts
 			return db.GroupMembers.Include(m => m.User).Where(m => groupsIds.Contains(m.GroupId) && !m.User.IsDeleted).ToList();
 		}
 
-		/* Instructor can view student if he is course admin or if student is member of one of accessable for instructor group */
-		public bool CanInstructorViewStudent(IPrincipal instructor, string studentId)
+		public Dictionary<string, List<Group>> GetUsersGroups(List<string> courseIds, IEnumerable<string> userIds, string currentUserId, bool actual, bool archived, int maxCount = 3)
 		{
-			if (instructor.HasAccess(CourseRole.CourseAdmin))
-				return true;
-
-			var coursesIds = courseManager.GetCourses().Select(c => c.Id).ToList();
-			var groups = GetAvailableForUserGroups(coursesIds, instructor);
-			var members = GetGroupsMembers(groups.Select(g => g.Id).ToList());
-			return members.Select(m => m.UserId).Contains(studentId);
-		}
-
-		public Dictionary<string, List<Group>> GetUsersGroups(List<string> courseIds, IEnumerable<string> userIds, IPrincipal currentUser, bool actual, bool archived, int maxCount = 3)
-		{
-			var canSeeAllGroups = courseIds.ToDictSafe(c => c.ToLower(), c => CanUserSeeAllCourseGroups(currentUser, c));
-			var currentUserId = currentUser.Identity.GetUserId();
+			var canSeeAllGroups = courseIds.ToDictSafe(c => c.ToLower(), c => CanUserSeeAllCourseGroups(currentUserId, c));
 
 			var groupsWithAccess = new HashSet<int>(db.GroupAccesses.Where(a => a.UserId == currentUserId && a.IsEnabled).Select(a => a.GroupId));
 			var usersGroups = db.GroupMembers
@@ -473,31 +456,31 @@ namespace Database.DataContexts
 			return usersGroups.Select((g, idx) => idx >= maxCount ? "..." : g.Name.TruncateWithEllipsis(40)).ToList();
 		}
 
-		public Dictionary<string, List<int>> GetUsersActualGroupsIds(List<string> courseIds, IEnumerable<string> userIds, IPrincipal currentUser, int maxCount = 3)
+		public Dictionary<string, List<int>> GetUsersActualGroupsIds(List<string> courseIds, IEnumerable<string> userIds, string currentUserId, int maxCount = 3)
 		{
-			var usersGroups = GetUsersGroups(courseIds, userIds, currentUser, actual: true, archived: false, maxCount);
+			var usersGroups = GetUsersGroups(courseIds, userIds, currentUserId, actual: true, archived: false, maxCount);
 			return usersGroups.ToDictSafe(
 				kv => kv.Key,
 				kv => kv.Value.Select(g => g.Id).ToList());
 		}
 
-		public Dictionary<string, string> GetUsersGroupsNamesAsStrings(List<string> courseIds, IEnumerable<string> userIds, IPrincipal currentUser, bool actual, bool archived, int maxCount = 3)
+		public Dictionary<string, string> GetUsersGroupsNamesAsStrings(List<string> courseIds, IEnumerable<string> userIds, string currentUserId, bool actual, bool archived, int maxCount = 3)
 		{
-			var usersGroups = GetUsersGroups(courseIds, userIds, currentUser, actual, archived, maxCount + 1)
+			var usersGroups = GetUsersGroups(courseIds, userIds, currentUserId, actual, archived, maxCount + 1)
 				.ToDictSafe(
 					kv => kv.Key,
 					kv => kv.Value.Select((g, idx) => idx >= maxCount ? "..." : g.Name.TruncateWithEllipsis(40)).ToList());
 			return usersGroups.ToDictSafe(kv => kv.Key, kv => string.Join(", ", kv.Value));
 		}
 
-		public Dictionary<string, string> GetUsersGroupsNamesAsStrings(string courseId, IEnumerable<string> userIds, IPrincipal currentUser, bool actual, bool archived, int maxCount = 3)
+		public Dictionary<string, string> GetUsersGroupsNamesAsStrings(string courseId, IEnumerable<string> userIds, string currentUserId, bool actual, bool archived, int maxCount = 3)
 		{
-			return GetUsersGroupsNamesAsStrings(new List<string> { courseId }, userIds, currentUser, actual, archived, maxCount);
+			return GetUsersGroupsNamesAsStrings(new List<string> { courseId }, userIds, currentUserId, actual, archived, maxCount);
 		}
 
-		public string GetUserGroupsNamesAsString(string courseId, string userId, IPrincipal currentUser, bool actual, bool archived, int maxCount = 3)
+		public string GetUserGroupsNamesAsString(string courseId, string userId, string currentUserId, bool actual, bool archived, int maxCount = 3)
 		{
-			var usersGroups = GetUsersGroupsNamesAsStrings(new List<string> { courseId }, new List<string> { userId }, currentUser, actual, archived, maxCount);
+			var usersGroups = GetUsersGroupsNamesAsStrings(new List<string> { courseId }, new List<string> { userId }, currentUserId, actual, archived, maxCount);
 			return usersGroups.GetOrDefault(userId, "");
 		}
 
@@ -554,9 +537,9 @@ namespace Database.DataContexts
 				.Any(m => m.Group.CourseId == course.Id && m.UserId == userId && !m.Group.IsDeleted && m.Group.IsManualCheckingEnabled);
 		}
 
-		public bool GetDefaultProhibitFutherReviewForUser(string courseId, string userId, IPrincipal instructor)
+		public bool GetDefaultProhibitFutherReviewForUser(string courseId, string userId, string instructorId)
 		{
-			var accessibleGroupsIds = new HashSet<int>(GetMyGroupsFilterAccessibleToUser(courseId, instructor).Select(g => g.Id));
+			var accessibleGroupsIds = new HashSet<int>(GetMyGroupsFilterAccessibleToUser(courseId, instructorId).Select(g => g.Id));
 			var userGroupsIdsWithDefaultProhibitFutherReview = db.GroupMembers
 				.Include(m => m.Group)
 				.Where(m => m.Group.CourseId == courseId && m.UserId == userId && !m.Group.IsDeleted && m.Group.DefaultProhibitFutherReview)
@@ -688,16 +671,6 @@ namespace Database.DataContexts
 
 			await db.SaveChangesAsync();
 			return db.GroupAccesses.Include(a => a.GrantedBy).Single(a => a.Id == currentAccess.Id);
-		}
-
-		public bool CanRevokeAccess(int groupId, string userId, IPrincipal revokedBy)
-		{
-			var revokedById = revokedBy.Identity.GetUserId();
-
-			var group = FindGroupById(groupId);
-			if (group.OwnerId == revokedById || revokedBy.HasAccessFor(group.CourseId, CourseRole.CourseAdmin))
-				return true;
-			return db.GroupAccesses.Any(a => a.GroupId == groupId && a.UserId == userId && a.GrantedById == revokedById && a.IsEnabled);
 		}
 
 		public async Task<List<GroupAccess>> RevokeAccess(int groupId, string userId)

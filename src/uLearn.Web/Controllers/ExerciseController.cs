@@ -11,18 +11,15 @@ using Database;
 using Database.DataContexts;
 using Database.Extensions;
 using Database.Models;
-using Elmah;
 using JetBrains.Annotations;
 using Microsoft.AspNet.Identity;
 using uLearn.Web.Extensions;
 using uLearn.Web.FilterAttributes;
-using uLearn.Web.LTI;
 using uLearn.Web.Models;
 using Ulearn.Common;
 using Ulearn.Common.Extensions;
 using Ulearn.Core.Courses;
 using Ulearn.Core.Courses.Slides;
-using Ulearn.Core.Courses.Slides.Blocks;
 using Ulearn.Core.Courses.Slides.Exercises;
 using Ulearn.Core.Courses.Slides.Exercises.Blocks;
 using Ulearn.Core.Helpers;
@@ -33,10 +30,12 @@ namespace uLearn.Web.Controllers
 	public class ExerciseController : BaseExerciseController
 	{
 		private readonly ExerciseStudentZipsCache exerciseStudentZipsCache;
+		private readonly UserRolesRepo userRolesRepo;
 
 		public ExerciseController()
 		{
 			exerciseStudentZipsCache = new ExerciseStudentZipsCache();
+			userRolesRepo = new UserRolesRepo(db);
 		}
 
 		[System.Web.Mvc.HttpPost]
@@ -82,11 +81,12 @@ namespace uLearn.Web.Controllers
 		[ULearnAuthorize(MinAccessLevel = CourseRole.Instructor)]
 		public async Task<ActionResult> DeleteExerciseCodeReview(string courseId, int reviewId)
 		{
+			var userId = User.Identity.GetUserId();
 			var review = slideCheckingsRepo.FindExerciseCodeReviewById(reviewId);
 			var reviewCourseId = review.ExerciseCheckingId.HasValue ? review.ExerciseChecking.CourseId : review.Submission.CourseId;
 			if (!reviewCourseId.EqualsIgnoreCase(courseId))
 				return new HttpStatusCodeResult(HttpStatusCode.Forbidden);
-			if (review.AuthorId != User.Identity.GetUserId() && !User.HasAccessFor(courseId, CourseRole.CourseAdmin))
+			if (review.AuthorId != User.Identity.GetUserId() && !userRolesRepo.HasUserAccessToCourse(userId, courseId, CourseRole.CourseAdmin))
 				return new HttpStatusCodeResult(HttpStatusCode.Forbidden);
 
 			await slideCheckingsRepo.DeleteExerciseCodeReview(review).ConfigureAwait(false);
@@ -142,6 +142,7 @@ namespace uLearn.Web.Controllers
 		[ValidateInput(false)]
 		public async Task<ActionResult> AddExerciseCodeReviewComment(int reviewId, string text)
 		{
+			var userId = User.Identity.GetUserId();
 			var review = slideCheckingsRepo.FindExerciseCodeReviewById(reviewId);
 			var currentUserId = User.Identity.GetUserId();
 
@@ -257,6 +258,7 @@ namespace uLearn.Web.Controllers
 			var courseId = submission.CourseId;
 			var slideId = submission.SlideId;
 			var userId = submission.UserId;
+			var currsntUserId = User.Identity.GetUserId();
 
 			if (!User.HasAccessFor(courseId, CourseRole.Instructor))
 				return new HttpStatusCodeResult(HttpStatusCode.Forbidden);

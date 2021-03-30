@@ -1,13 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Security.Principal;
 using System.Web.Configuration;
 using System.Web.Mvc;
 using ApprovalUtilities.Utilities;
 using Database;
 using Database.DataContexts;
-using Database.Extensions;
 using Database.Models;
 using Vostok.Logging.Abstractions;
 using Microsoft.AspNet.Identity;
@@ -29,9 +27,9 @@ namespace uLearn.Web.Controllers
 			ulearnBaseUrl = WebConfigurationManager.AppSettings["ulearn.baseUrl"] ?? "";
 		}
 
-		public static bool HasPassword(UserManager<ApplicationUser> userManager, IPrincipal principal)
+		public static bool HasPassword(UserManager<ApplicationUser> userManager, string userId)
 		{
-			var user = userManager.FindById(principal.Identity.GetUserId());
+			var user = userManager.FindById(userId);
 			return user?.PasswordHash != null;
 		}
 
@@ -71,15 +69,16 @@ namespace uLearn.Web.Controllers
 			}
 		}
 
-		public static T GetFilterOptionsByGroup<T>(GroupsRepo groupsRepo, IPrincipal User, string courseId, List<string> groupsIds, bool allowSeeGroupForAnyMember = false) where T : AbstractFilterOptionByCourseAndUsers, new()
+		public static T GetFilterOptionsByGroup<T>(GroupsRepo groupsRepo, UserRolesRepo userRolesRepo, string userId, string courseId, List<string> groupsIds, bool allowSeeGroupForAnyMember = false) where T : AbstractFilterOptionByCourseAndUsers, new()
 		{
 			var result = new T { CourseId = courseId };
+			var isCourseAdmin = userRolesRepo.HasUserAccessToCourse(userId, courseId, CourseRole.CourseAdmin);
 
 			/* if groupsIds contains "all" (it should be exclusive), get all users. Available only for course admins */
-			if (groupsIds.Contains("all") && User.HasAccessFor(courseId, CourseRole.CourseAdmin))
+			if (groupsIds.Contains("all") && isCourseAdmin)
 				return result;
 			/* if groupsIds contains "not-group" (it should be exclusive), get all users not in any groups, available only for course admins */
-			if (groupsIds.Contains("not-in-group") && User.HasAccessFor(courseId, CourseRole.CourseAdmin))
+			if (groupsIds.Contains("not-in-group") && isCourseAdmin)
 			{
 				var usersInGroups = groupsRepo.GetUsersIdsForAllGroups(courseId);
 				result.UserIds = usersInGroups.ToList();
@@ -90,9 +89,9 @@ namespace uLearn.Web.Controllers
 			result.UserIds = new List<string>();
 
 			/* if groupsIds is empty, get members of all groups user has access to. Available for instructors */
-			if ((groupsIds.Count == 0 || groupsIds.Any(string.IsNullOrEmpty)) && User.HasAccessFor(courseId, CourseRole.Instructor))
+			if ((groupsIds.Count == 0 || groupsIds.Any(string.IsNullOrEmpty)) &&userRolesRepo.HasUserAccessToCourse(userId, courseId, CourseRole.Instructor))
 			{
-				var accessibleGroupsIds = groupsRepo.GetMyGroupsFilterAccessibleToUser(courseId, User).Select(g => g.Id).ToList();
+				var accessibleGroupsIds = groupsRepo.GetMyGroupsFilterAccessibleToUser(courseId, userId).Select(g => g.Id).ToList();
 				var groupUsersIdsQuery = groupsRepo.GetGroupsMembersAsUserIds(accessibleGroupsIds);
 				result.UserIds = groupUsersIdsQuery.ToList();
 				return result;
@@ -107,9 +106,9 @@ namespace uLearn.Web.Controllers
 			{
 				if (!group2GroupMembersIds.ContainsKey(groupIdInt))
 					continue;
-				var hasAccessToGroup = groupsRepo.IsGroupAvailableForUser(groupIdInt, User);
+				var hasAccessToGroup = groupsRepo.IsGroupAvailableForUser(groupIdInt, userId);
 				if (allowSeeGroupForAnyMember)
-					hasAccessToGroup |= group2GroupMembersIds[groupIdInt].Contains(User.Identity.GetUserId());
+					hasAccessToGroup |= group2GroupMembersIds[groupIdInt].Contains(userId);
 				if (hasAccessToGroup)
 					usersIds.AddAll(group2GroupMembersIds[groupIdInt]);
 			}
@@ -118,7 +117,7 @@ namespace uLearn.Web.Controllers
 			return result;
 		}
 
-		public static List<string> GetEnabledAdditionalScoringGroupsForGroups(GroupsRepo groupsRepo, Course course, List<string> groupsIds, IPrincipal User)
+		public static List<string> GetEnabledAdditionalScoringGroupsForGroups(GroupsRepo groupsRepo, Course course, List<string> groupsIds, string userId)
 		{
 			if (groupsIds.Contains("all") || groupsIds.Contains("not-in-group"))
 				return course.Settings.Scoring.Groups.Keys.ToList();
@@ -130,7 +129,7 @@ namespace uLearn.Web.Controllers
 			/* if groupsIds is empty, get members of all own groups. Available for instructors */
 			if (groupsIds.Count == 0 || groupsIds.Any(string.IsNullOrEmpty))
 			{
-				var accessableGroupsIds = groupsRepo.GetMyGroupsFilterAccessibleToUser(course.Id, User).Select(g => g.Id).ToList();
+				var accessableGroupsIds = groupsRepo.GetMyGroupsFilterAccessibleToUser(course.Id, userId).Select(g => g.Id).ToList();
 				return enabledAdditionalScoringGroupsForGroups.Where(kv => accessableGroupsIds.Contains(kv.Key)).SelectMany(kv => kv.Value).ToList();
 			}
 
@@ -179,10 +178,10 @@ namespace uLearn.Web.Controllers
 			return slide.MaxScore;
 		}
 
-		public static int GetManualCheckingsCountInQueue(SlideCheckingsRepo slideCheckingsRepo, GroupsRepo groupsRepo, IPrincipal user,
+		public static int GetManualCheckingsCountInQueue(SlideCheckingsRepo slideCheckingsRepo, GroupsRepo groupsRepo, UserRolesRepo userRolesRepo, string userId,
 			string courseId, Slide slide, List<string> groupsIds)
 		{
-			var filterOptions = GetFilterOptionsByGroup<ManualCheckingQueueFilterOptions>(groupsRepo, user, courseId, groupsIds);
+			var filterOptions = GetFilterOptionsByGroup<ManualCheckingQueueFilterOptions>(groupsRepo, userRolesRepo, userId, courseId, groupsIds);
 			filterOptions.SlidesIds = new List<Guid> { slide.Id };
 
 			if (slide is ExerciseSlide)

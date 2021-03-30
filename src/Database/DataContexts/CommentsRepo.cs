@@ -2,12 +2,9 @@
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
-using System.Security.Principal;
 using System.Threading.Tasks;
-using Database.Extensions;
 using Database.Models;
 using JetBrains.Annotations;
-using Microsoft.AspNet.Identity;
 using Ulearn.Common;
 
 namespace Database.DataContexts
@@ -15,6 +12,7 @@ namespace Database.DataContexts
 	public class CommentsRepo
 	{
 		private readonly ULearnDb db;
+		private readonly UserRolesRepo userRolesRepo;
 
 		public CommentsRepo()
 			: this(new ULearnDb())
@@ -24,12 +22,13 @@ namespace Database.DataContexts
 		public CommentsRepo(ULearnDb db)
 		{
 			this.db = db;
+			userRolesRepo = new UserRolesRepo(db);
 		}
 
-		public async Task<Comment> AddComment(IPrincipal author, string courseId, Guid slideId, int parentCommentId, bool isForInstructorsOnly, string commentText)
+		public async Task<Comment> AddComment(string authorId, string courseId, Guid slideId, int parentCommentId, bool isForInstructorsOnly, string commentText)
 		{
 			var commentsPolicy = GetCommentsPolicy(courseId);
-			var isInstructor = author.HasAccessFor(courseId, CourseRole.Instructor);
+			var isInstructor = userRolesRepo.HasUserAccessToCourse(authorId, courseId, CourseRole.Instructor);
 			var isApproved = commentsPolicy.ModerationPolicy == CommentModerationPolicy.Postmoderation || isInstructor;
 
 			/* Instructors' replies are automaticly correct */
@@ -37,7 +36,7 @@ namespace Database.DataContexts
 			var isCorrectAnswer = isReply && isInstructor && !isForInstructorsOnly;
 
 			var comment = db.Comments.Create();
-			comment.AuthorId = author.Identity.GetUserId();
+			comment.AuthorId = authorId;
 			comment.CourseId = courseId;
 			comment.SlideId = slideId;
 			comment.ParentCommentId = parentCommentId;

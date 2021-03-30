@@ -114,11 +114,6 @@ namespace Database.DataContexts
 			return db.CourseAccesses.Include(a => a.GrantedBy).Single(a => a.Id == currentAccess.Id);
 		}
 
-		public bool CanRevokeAccess(string courseId, string userId, IPrincipal revokedBy)
-		{
-			return revokedBy.HasAccessFor(courseId, CourseRole.CourseAdmin);
-		}
-
 		public async Task<List<CourseAccess>> RevokeAccess(string courseId, string userId, CourseAccessType accessType, string grantedById, string comment)
 		{
 			courseId = courseId.ToLower();

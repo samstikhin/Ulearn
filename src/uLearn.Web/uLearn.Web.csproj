@@ -813,7 +813,6 @@
     <Compile Include="Extensions\HtmlStringExtensions.cs" />
     <Compile Include="Extensions\OwinRequestExtensions.cs" />
     <Compile Include="Extensions\StringExtensions_should.cs" />
-    <Compile Include="Extensions\UserExtensions.cs" />
     <Compile Include="Helpers\ExcelWorksheetBuilder.cs" />
     <Compile Include="Helpers\TelegramHelper.cs" />
     <Compile Include="Kontur.Passport\KonturPassportConstants.cs" />

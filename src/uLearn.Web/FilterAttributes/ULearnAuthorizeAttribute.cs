@@ -36,14 +36,16 @@ namespace uLearn.Web.FilterAttributes
 				return false;
 
 			var userId = httpContext.User.Identity.GetUserId();
-			var usersRepo = new UsersRepo(new ULearnDb());
+			var db = new ULearnDb();
+			var usersRepo = new UsersRepo(db);
 			if (usersRepo.FindUserById(userId) == null) // I.e. if user has been deleted
 				return false;
 
 			if (MinAccessLevel == CourseRole.Student && !ShouldBeSysAdmin)
 				return true;
 
-			if (ShouldBeSysAdmin && user.IsSystemAdministrator())
+			var userRolesRepo = new UserRolesRepo(db);
+			if (ShouldBeSysAdmin && userRolesRepo.IsSystemAdministrator(userId))
 				return true;
 
 			if (MinAccessLevel == CourseRole.Student)
@@ -56,7 +58,7 @@ namespace uLearn.Web.FilterAttributes
 			if (courseIds.Length != 1)
 				return false;
 
-			return user.HasAccessFor(courseIds[0], MinAccessLevel);
+			return userRolesRepo.HasUserAccessToCourse(userId, courseIds[0], MinAccessLevel);
 		}
 
 		public bool ShouldBeSysAdmin { get; set; }

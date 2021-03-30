@@ -46,7 +46,7 @@ namespace Database.Repos.Users
 			var role = await db.Roles.FirstOrDefaultAsync(r => r.Name == lmsRole.ToString()).ConfigureAwait(false);
 			if (role == null)
 				return new List<string>();
-			return db.Users.Where(u => !u.IsDeleted).FilterByRole(role, userManager).Select(u => u.Id).ToList();
+			return db.Users.Where(u => !u.IsDeleted).FilterByRole(role).Select(u => u.Id).ToList();
 		}
 
 		public Task<List<string>> GetSysAdminsIdsAsync()

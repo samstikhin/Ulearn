@@ -1,7 +1,6 @@
 ﻿using System.Threading.Tasks;
 using System.Web;
 using Database.DataContexts;
-using Database.Extensions;
 using Database.Models;
 using Vostok.Logging.Abstractions;
 using Microsoft.AspNet.Identity;
@@ -43,7 +42,7 @@ namespace uLearn.Web.Controllers
 		{
 			var authenticationManager = GetAuthenticationManager(context);
 			authenticationManager.SignOut(DefaultAuthenticationTypes.ExternalCookie);
-			var identity = await user.GenerateUserIdentityAsync(userManager, userRoles);
+			var identity = await userManager.CreateIdentityAsync(user, "Identity.Application");
 			authenticationManager.SignIn(new AuthenticationProperties { IsPersistent = isPersistent }, identity);
 		}
 

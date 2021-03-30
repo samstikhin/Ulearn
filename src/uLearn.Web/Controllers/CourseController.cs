@@ -69,6 +69,7 @@ namespace uLearn.Web.Controllers
 		{
 			if (slideId.Contains("_"))
 				slideId = slideId.Substring(slideId.LastIndexOf('_') + 1);
+			var userId = User.Identity.GetUserId();
 
 			// По крайней мере одно из мест использования groupsIds: переход на следующее ревью после выполнения предыдущего.
 			var groupsIds = Request.GetMultipleValuesFromQueryString("group");
@@ -85,10 +86,10 @@ namespace uLearn.Web.Controllers
 			if (course == null)
 				return HttpNotFound();
 
-			var visibleUnitIds = unitsRepo.GetVisibleUnitIds(course, User);
+			var visibleUnitIds = unitsRepo.GetVisibleUnitIds(course, userId);
 			var visibleUnits = course.GetUnits(visibleUnitIds);
 			var isGuest = !User.Identity.IsAuthenticated;
-			var isInstructor = !isGuest && User.HasAccessFor(course.Id, CourseRole.Instructor);
+			var isInstructor = !isGuest && userRolesRepo.HasUserAccessToCourse(userId, courseId, CourseRole.Instructor);
 
 			var slide = slideGuid == Guid.Empty
 				? GetInitialSlideForStartup(courseId, visibleUnits, isInstructor)
@@ -106,7 +107,7 @@ namespace uLearn.Web.Controllers
 
 			AbstractManualSlideChecking queueItem = null;
 			var isManualCheckingReadonly = false;
-			if (User.HasAccessFor(courseId, CourseRole.Instructor) && checkQueueItemId != null)
+			if (isInstructor && checkQueueItemId != null)
 			{
 				if (slide is QuizSlide)
 					queueItem = slideCheckingsRepo.FindManualCheckingById<ManualQuizChecking>(checkQueueItemId.Value);
@@ -143,9 +144,10 @@ namespace uLearn.Web.Controllers
 			var course = courseManager.FindCourse(courseId);
 			if (course == null)
 				return HttpNotFound();
-			var visibleUnitIds = unitsRepo.GetVisibleUnitIds(course, User);
+			var userId = User.Identity.GetUserId();
+			var visibleUnitIds = unitsRepo.GetVisibleUnitIds(course, userId);
 			var visibleUnits = course.GetUnits(visibleUnitIds);
-			var isInstructor = User.HasAccessFor(course.Id, CourseRole.Instructor);
+			var isInstructor = userRolesRepo.HasUserAccessToCourse(userId, course.Id, CourseRole.Instructor);
 			var slide = GetInitialSlideForStartup(courseId, visibleUnits, isInstructor);
 			if (slide == null)
 				return HttpNotFound();
@@ -269,8 +271,8 @@ namespace uLearn.Web.Controllers
 			if (manualChecking != null)
 				userId = manualChecking.UserId;
 
-			var defaultProhibitFurtherReview = groupsRepo.GetDefaultProhibitFutherReviewForUser(course.Id, userId, User);
-			var manualCheckingsLeftInQueue = manualChecking != null ? ControllerUtils.GetManualCheckingsCountInQueue(slideCheckingsRepo, groupsRepo, User, course.Id, slide, groupsIds) : 0;
+			var defaultProhibitFurtherReview = groupsRepo.GetDefaultProhibitFutherReviewForUser(course.Id, userId, userId);
+			var manualCheckingsLeftInQueue = manualChecking != null ? ControllerUtils.GetManualCheckingsCountInQueue(slideCheckingsRepo, groupsRepo, userRolesRepo, userId, course.Id, slide, groupsIds) : 0;
 
 			var (notArchivedGroupNames, archivedGroupNames) = GetGroupNames(course, manualChecking);
 
@@ -295,11 +297,12 @@ namespace uLearn.Web.Controllers
 
 		private (string, string) GetGroupNames(Course course, AbstractManualSlideChecking manualChecking)
 		{
+			var userId = User.Identity.GetUserId();
 			var notArchivedGroupNames = "";
 			var archivedGroupNames = "";
 			if (manualChecking != null)
 			{
-				var userGroups = groupsRepo.GetUsersGroups(new List<string> { course.Id }, new List<string> { manualChecking.UserId }, User,
+				var userGroups = groupsRepo.GetUsersGroups(new List<string> { course.Id }, new List<string> { manualChecking.UserId }, userId,
 					actual: true, archived: true, 100);
 				if (userGroups.ContainsKey(manualChecking.UserId))
 				{
@@ -314,7 +317,8 @@ namespace uLearn.Web.Controllers
 		// returns null if user can't edit git
 		private string GetGitEditLink(Course course, FileInfo pageFile)
 		{
-			var courseRole = User.GetCourseRole(course.Id);
+			var userId = User.Identity.GetUserId();
+			var courseRole = userRolesRepo.GetRole(userId, course.Id);
 			var canEditGit = courseRole != null && courseRole <= CourseRole.CourseAdmin;
 			if (!canEditGit)
 				return null;
@@ -342,6 +346,7 @@ namespace uLearn.Web.Controllers
 			bool autoplay = false, bool isManualCheckingReadonly = false, bool defaultProhibitFurtherReview = true,
 			int manualCheckingsLeftInQueue = 0)
 		{
+			var userId = User.Identity.GetUserId();
 			/* ExerciseController will fill blockDatas later */
 			var blockData = slide.Blocks.Select(b => (dynamic)null).ToArray();
 			return new BlockRenderContext(
@@ -350,7 +355,7 @@ namespace uLearn.Web.Controllers
 				slide.Info.DirectoryRelativePath,
 				blockData,
 				isGuest: false,
-				revealHidden: User.HasAccessFor(course.Id, CourseRole.Instructor),
+				revealHidden:userRolesRepo.HasUserAccessToCourse(userId, course.Id, CourseRole.Instructor),
 				manualChecking: manualChecking,
 				manualCheckingsLeftInQueue: manualCheckingsLeftInQueue,
 				canUserFillQuiz: false,
@@ -367,8 +372,9 @@ namespace uLearn.Web.Controllers
 
 		public async Task<ActionResult> AcceptedSolutions(string courseId, Guid slideId, bool isLti = false)
 		{
+			var userId = User.Identity.GetUserId();
 			var course = courseManager.GetCourse(courseId);
-			var isInstructor = User.HasAccessFor(course.Id, CourseRole.Instructor);
+			var isInstructor = userRolesRepo.HasUserAccessToCourse(userId, course.Id, CourseRole.Instructor);
 			var slide = course.GetSlideById(slideId, isInstructor) as ExerciseSlide;
 			if (slide == null)
 				return HttpNotFound();
@@ -426,8 +432,9 @@ namespace uLearn.Web.Controllers
 			if (!User.Identity.IsAuthenticated)
 				return new HttpStatusCodeResult(HttpStatusCode.Forbidden);
 
+			var userId = User.Identity.GetUserId();
 			var course = courseManager.GetCourse(courseId);
-			var isInstructor = User.HasAccessFor(course.Id, CourseRole.Instructor);
+			var isInstructor = userRolesRepo.HasUserAccessToCourse(userId, course.Id, CourseRole.Instructor);
 			var slide = (ExerciseSlide)course.GetSlideById(slideId, isInstructor);
 			var model = CreateAcceptedAlertModel(slide, course);
 			return View(model);
@@ -511,8 +518,8 @@ namespace uLearn.Web.Controllers
 
 		public async Task<ActionResult> Courses(string courseId = null, string courseTitle = null)
 		{
-			var isSystemAdministrator = User.IsSystemAdministrator();
 			var userId = User.Identity.GetUserId();
+			var isSystemAdministrator = userRolesRepo.IsSystemAdministrator(userId);
 			var courses = courseManager.GetCourses();
 
 			// Неопубликованные курсы не покажем тем, кто не имеет роли в них.

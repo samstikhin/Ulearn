@@ -48,7 +48,7 @@ namespace uLearn.Web
 				{
 					OnValidateIdentity = SecurityStampValidator.OnValidateIdentity<ULearnUserManager, ApplicationUser, string>(
 						validateInterval: TimeSpan.FromMinutes(30),
-						regenerateIdentityCallback: (manager, user) => user.GenerateUserIdentityAsync(manager),
+						regenerateIdentityCallback: (manager, user) => manager.CreateIdentityAsync(user, "Identity.Application"),
 						getUserIdCallback: identity => identity.GetUserId()
 					)
 				},

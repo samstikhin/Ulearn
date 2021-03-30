@@ -62,6 +62,12 @@ namespace Database.DataContexts
 				.ToDictionary(g => g.Key, g => g.Select(role => role.Role).Min(), StringComparer.OrdinalIgnoreCase);
 		}
 
+		public CourseRole GetRole(string userId, string courseId)
+		{
+			var roles = GetActualUserRoles(userId, courseId).Select(role => role.Role).ToList();
+			return roles.Any() ? roles.Min() : CourseRole.Student;
+		}
+
 		public bool HasUserAccessToCourse(string userId, string courseId, CourseRole minCourseRoleType)
 		{
 			var user = userManager.FindByNameAsync(userId).Result;
@@ -69,6 +75,23 @@ namespace Database.DataContexts
 				return true;
 
 			return GetActualUserRoles(userId).Any(r => string.Equals(r.CourseId, courseId, StringComparison.OrdinalIgnoreCase) && r.Role <= minCourseRoleType);
+		}
+
+		public bool HasAccess(string userId, CourseRole minAccessLevel)
+		{
+			if (IsSystemAdministrator(userId))
+				return true;
+
+			var roles = GetActualUserRoles(userId).Select(t => t.Role).ToList();
+
+			if (!roles.Any())
+				return false;
+			return roles.Min() <= minAccessLevel;
+		}
+
+		public IEnumerable<string> GetCoursesIdFor(string userId, CourseRole role)
+		{
+			return GetActualUserRoles(userId).Where(t => t.Role <= role).Select(t => t.CourseId);
 		}
 
 		public bool IsSystemAdministrator(ApplicationUser user)
@@ -80,6 +103,24 @@ namespace Database.DataContexts
 				sysAdminRole = db.Roles.First(r => r.Name == LmsRoles.SysAdmin.ToString());
 
 			return user.Roles.Any(role => role.RoleId == sysAdminRole.Id);
+		}
+
+		public bool IsSystemAdministrator(string userId)
+		{
+			return GetSysAdminsIds().Contains(userId);
+		}
+
+		public List<string> GetSysAdminsIds()
+		{
+			return GetUserIdsWithLmsRole(LmsRoles.SysAdmin);
+		}
+
+		public List<string> GetUserIdsWithLmsRole(LmsRoles lmsRole)
+		{
+			var role = db.Roles.FirstOrDefault(r => r.Name == lmsRole.ToString());
+			if (role == null)
+				return new List<string>();
+			return db.Users.Where(u => !u.IsDeleted).FilterByRole(role).Select(u => u.Id).ToList();
 		}
 
 		public async Task<bool> ToggleRole(string courseId, string userId, CourseRole role, string grantedById, string comment)

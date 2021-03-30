@@ -12,8 +12,8 @@ using AntiPlagiarism.Api.Models.Parameters;
 using AntiPlagiarism.Api.Models.Results;
 using Database;
 using Database.DataContexts;
-using Database.Extensions;
 using Database.Models;
+using Microsoft.AspNet.Identity;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
 using uLearn.Web.FilterAttributes;
@@ -33,6 +33,7 @@ namespace uLearn.Web.Controllers
 		private readonly UserSolutionsRepo userSolutionsRepo;
 		private readonly GroupsRepo groupsRepo;
 		private readonly CourseManager courseManager;
+		private readonly UserRolesRepo userRolesRepo;
 		private static readonly IAntiPlagiarismClient antiPlagiarismClient;
 
 		static AntiPlagiarismController()
@@ -41,14 +42,15 @@ namespace uLearn.Web.Controllers
 			antiPlagiarismClient = new AntiPlagiarismClient(antiplagiarismClientConfiguration.Endpoint, antiplagiarismClientConfiguration.Token);
 		}
 
-		public AntiPlagiarismController(UserSolutionsRepo userSolutionsRepo, GroupsRepo groupsRepo)
+		public AntiPlagiarismController(UserSolutionsRepo userSolutionsRepo, GroupsRepo groupsRepo, UserRolesRepo userRolesRepo)
 		{
 			this.userSolutionsRepo = userSolutionsRepo;
 			this.groupsRepo = groupsRepo;
+			this.userRolesRepo = userRolesRepo;
 		}
 
 		public AntiPlagiarismController(ULearnDb db, WebCourseManager courseManager)
-			: this(new UserSolutionsRepo(db, courseManager), new GroupsRepo(db, courseManager))
+			: this(new UserSolutionsRepo(db, courseManager), new GroupsRepo(db, courseManager), new UserRolesRepo(db))
 		{
 			this.courseManager = courseManager;
 		}
@@ -135,7 +137,7 @@ namespace uLearn.Web.Controllers
 			/* Use special MockUserCanSeeAllGroups() instead of User because we want to show all users groups, not only available */
 			var usersGroups = groupsRepo.GetUsersGroupsNamesAsStrings(courseId, userIds, new MockUserCanSeeAllGroups(), actual: true, archived: false).ToDefaultDictionary();
 			var usersArchivedGroups = groupsRepo.GetUsersGroupsNamesAsStrings(courseId, userIds, new MockUserCanSeeAllGroups(), actual: false, archived: true).ToDefaultDictionary();
-			var isCourseOrSysAdmin = User.HasAccessFor(courseId, CourseRole.CourseAdmin);
+			var isCourseOrSysAdmin = userRolesRepo.HasUserAccessToCourse(User.Identity.GetUserId(), courseId, CourseRole.CourseAdmin);
 
 			var course = courseManager.FindCourse(courseId);
 			var slide = course?.FindSlideById(submission.SlideId, true);

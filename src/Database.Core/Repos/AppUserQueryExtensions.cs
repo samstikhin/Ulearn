@@ -8,7 +8,7 @@ namespace Database.Repos
 {
 	public static class AppUserQueryExtensions
 	{
-		public static IQueryable<ApplicationUser> FilterByRole(this IQueryable<ApplicationUser> applicationUsers, IdentityRole role, UserManager<ApplicationUser> userManager)
+		public static IQueryable<ApplicationUser> FilterByRole(this IQueryable<ApplicationUser> applicationUsers, IdentityRole role)
 		{
 			return role == null
 				? applicationUsers

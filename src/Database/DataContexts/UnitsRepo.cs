@@ -1,8 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Security.Principal;
-using Database.Extensions;
 using Database.Models;
 using Ulearn.Core.Courses;
 
@@ -11,17 +9,19 @@ namespace Database.DataContexts
 	public class UnitsRepo
 	{
 		private readonly ULearnDb db;
+		private readonly UserRolesRepo userRolesRepo;
 		private readonly WebCourseManager courseManager;
 
 		public UnitsRepo(ULearnDb db)
 		{
 			this.db = db;
 			courseManager = WebCourseManager.Instance;
+			userRolesRepo = new UserRolesRepo(db);
 		}
 
-		public IEnumerable<Guid> GetVisibleUnitIds(Course course, IPrincipal user)
+		public IEnumerable<Guid> GetVisibleUnitIds(Course course, string userId)
 		{
-			var canSeeEverything = user.HasAccessFor(course.Id, CourseRole.Tester);
+			var canSeeEverything = userRolesRepo.HasUserAccessToCourse(userId, course.Id, CourseRole.Tester);
 			if (canSeeEverything)
 				return course.GetUnitsNotSafe().Select(u => u.Id);
 			return GetVisibleUnitIds(course);

@@ -8,7 +8,6 @@ using System.Web;
 using System.Web.Mvc;
 using Database;
 using Database.DataContexts;
-using Database.Extensions;
 using Database.Models;
 using Microsoft.AspNet.Identity;
 using OfficeOpenXml;
@@ -41,6 +40,7 @@ namespace uLearn.Web.Controllers
 		private readonly UsersRepo usersRepo;
 		private readonly UnitsRepo unitsRepo;
 		private readonly AdditionalScoresRepo additionalScoresRepo;
+		private readonly UserRolesRepo userRolesRepo;
 
 		public AnalyticsController()
 			: this(new ULearnDb(), WebCourseManager.Instance)
@@ -54,6 +54,7 @@ namespace uLearn.Web.Controllers
 
 			additionalScoresRepo = new AdditionalScoresRepo(db);
 			userSolutionsRepo = new UserSolutionsRepo(db, courseManager);
+			userRolesRepo = new UserRolesRepo(db);
 			groupsRepo = new GroupsRepo(db, courseManager);
 			usersRepo = new UsersRepo(db);
 			visitsRepo = new VisitsRepo(db);
@@ -68,6 +69,7 @@ namespace uLearn.Web.Controllers
 			if (param.CourseId == null)
 				return HttpNotFound();
 
+			var userId = User.Identity.GetUserId();
 			var courseId = param.CourseId;
 			var unitId = param.UnitId;
 			var periodStart = param.PeriodStartDate;
@@ -77,7 +79,7 @@ namespace uLearn.Web.Controllers
 			var realPeriodFinish = periodFinish.Add(TimeSpan.FromDays(1));
 
 			var course = courseManager.GetCourse(courseId);
-			var visibleUnitsIds = unitsRepo.GetVisibleUnitIds(course, User);
+			var visibleUnitsIds = unitsRepo.GetVisibleUnitIds(course, userId);
 			var visibleUnits = course.GetUnits(visibleUnitsIds);
 			if (!unitId.HasValue)
 				return View("UnitStatisticsList", new UnitStatisticPageModel
@@ -93,8 +95,8 @@ namespace uLearn.Web.Controllers
 			var slides = selectedUnit.GetSlides(false);
 			var slidesIds = slides.Select(s => s.Id).ToList();
 
-			var groups = groupsRepo.GetAvailableForUserGroups(courseId, User);
-			var filterOptions = ControllerUtils.GetFilterOptionsByGroup<VisitsFilterOptions>(groupsRepo, User, courseId, groupsIds);
+			var groups = groupsRepo.GetAvailableForUserGroups(courseId, userId);
+			var filterOptions = ControllerUtils.GetFilterOptionsByGroup<VisitsFilterOptions>(groupsRepo, userRolesRepo, userId, courseId, groupsIds);
 			filterOptions.SlidesIds = slidesIds;
 			filterOptions.PeriodStart = periodStart;
 			filterOptions.PeriodFinish = realPeriodFinish;
@@ -102,7 +104,7 @@ namespace uLearn.Web.Controllers
 			var slidesVisits = visitsRepo.GetVisitsInPeriodForEachSlide(filterOptions);
 
 			UnitStatSectionModel statSectionModel = null;
-			if (param.ShowStat || User.HasAccessFor(courseId, CourseRole.CourseAdmin))
+			if (param.ShowStat || userRolesRepo.HasUserAccessToCourse(userId, courseId, CourseRole.CourseAdmin))
 			{
 				statSectionModel = new UnitStatSectionModel();
 				statSectionModel.UsersVisitedAllSlidesInPeriodCount = visitsRepo.GetUsersVisitedAllSlides(filterOptions).Count();
@@ -439,11 +441,12 @@ namespace uLearn.Web.Controllers
 		/* TODO: extract copy-paste */
 		private CourseStatisticPageModel GetCourseStatisticsModel(CourseStatisticsParams param, int usersLimit)
 		{
+			var userId = User.Identity.GetUserId();
 			var courseId = param.CourseId;
 			var periodStart = param.PeriodStartDate;
 			var periodFinish = param.PeriodFinishDate;
 			var groupsIds = Request.GetMultipleValuesFromQueryString("group");
-			var isInstructor = User.HasAccessFor(courseId, CourseRole.Instructor);
+			var isInstructor = userRolesRepo.HasUserAccessToCourse(userId, courseId, CourseRole.Instructor);
 			var isStudent = !isInstructor;
 
 			var currentUserId = User.Identity.GetUserId();
@@ -453,12 +456,12 @@ namespace uLearn.Web.Controllers
 			var realPeriodFinish = periodFinish.Add(TimeSpan.FromDays(1));
 
 			var course = courseManager.GetCourse(courseId);
-			var visibleUnitsIds = unitsRepo.GetVisibleUnitIds(course, User);
+			var visibleUnitsIds = unitsRepo.GetVisibleUnitIds(course, userId);
 			var visibleUnits = course.GetUnits(visibleUnitsIds);
 
 			var slidesIds = visibleUnits.SelectMany(u => u.GetSlides(isInstructor).Select(s => s.Id)).ToHashSet();
 
-			var filterOptions = ControllerUtils.GetFilterOptionsByGroup<VisitsFilterOptions>(groupsRepo, User, courseId, groupsIds, allowSeeGroupForAnyMember: true);
+			var filterOptions = ControllerUtils.GetFilterOptionsByGroup<VisitsFilterOptions>(groupsRepo, userRolesRepo, userId, courseId, groupsIds, allowSeeGroupForAnyMember: true);
 			filterOptions.PeriodStart = periodStart;
 			filterOptions.PeriodFinish = realPeriodFinish;
 
@@ -484,7 +487,7 @@ namespace uLearn.Web.Controllers
 				.ToList();
 			var visitedUsersIds = visitedUsers.Select(v => v.UserId).ToList();
 
-			var visitedUsersGroups = groupsRepo.GetUsersActualGroupsIds(new List<string> { courseId }, visitedUsersIds, User, 10).ToDefaultDictionary();
+			var visitedUsersGroups = groupsRepo.GetUsersActualGroupsIds(new List<string> { courseId }, visitedUsersIds, userId, 10).ToDefaultDictionary();
 
 			/* From now fetch only filtered users' statistics */
 			filterOptions.UserIds = visitedUsersIds;
@@ -501,13 +504,13 @@ namespace uLearn.Web.Controllers
 			var enabledAdditionalScoringGroupsForGroups = GetEnabledAdditionalScoringGroupsForGroups(courseId);
 
 			/* Filter out only scoring groups which are affected in selected groups */
-			var additionalScoringGroupsForFilteredGroups = ControllerUtils.GetEnabledAdditionalScoringGroupsForGroups(groupsRepo, course, groupsIds, User);
+			var additionalScoringGroupsForFilteredGroups = ControllerUtils.GetEnabledAdditionalScoringGroupsForGroups(groupsRepo, course, groupsIds, userId);
 			scoringGroups = scoringGroups
 				.Where(kv => kv.Value.MaxNotAdditionalScore > 0 || additionalScoringGroupsForFilteredGroups.Contains(kv.Key))
 				.ToDictionary(kv => kv.Key, kv => kv.Value)
 				.ToSortedDictionary();
 
-			var groups = groupsRepo.GetAvailableForUserGroups(courseId, User);
+			var groups = groupsRepo.GetAvailableForUserGroups(courseId, userId);
 			if (!isInstructor)
 				groups = groupsRepo.GetUserGroups(courseId, currentUserId);
 			var model = new CourseStatisticPageModel
@@ -601,7 +604,7 @@ namespace uLearn.Web.Controllers
 			if (user == null)
 				return HttpNotFound();
 
-			var visibleUnitsIds = unitsRepo.GetVisibleUnitIds(course, User);
+			var visibleUnitsIds = unitsRepo.GetVisibleUnitIds(course, userId);
 			var visibleUnits = course.GetUnits(visibleUnitsIds);
 			var unit = visibleUnits.FirstOrDefault(x => x.Id == unitId);
 			if (unit == null)
@@ -648,7 +651,8 @@ namespace uLearn.Web.Controllers
 			var course = courseManager.FindCourse(courseId);
 			if (course == null)
 				return HttpNotFound();
-			var isInstructor = User.HasAccessFor(courseId, CourseRole.Instructor);
+			var userId = User.Identity.GetUserId();
+			var isInstructor = userRolesRepo.HasUserAccessToCourse(userId, courseId, CourseRole.Instructor);
 			var slide = course.FindSlideById(slideId, isInstructor);
 			var exerciseBlock = slide?.Blocks.OfType<AbstractExerciseBlock>().FirstOrDefault();
 			if (exerciseBlock == null)
@@ -656,7 +660,7 @@ namespace uLearn.Web.Controllers
 			var smallPointsIsBetter = exerciseBlock.SmallPointsIsBetter;
 			
 			var currentUserId = User.Identity.GetUserId();
-			var isAdministrator = User.HasAccessFor(courseId, CourseRole.CourseAdmin);
+			var isAdministrator = userRolesRepo.HasUserAccessToCourse(userId, courseId, CourseRole.CourseAdmin);
 			var isStudent = !isInstructor;
 
 			Group selectedGroup = null;
@@ -672,14 +676,14 @@ namespace uLearn.Web.Controllers
 				users = groupsRepo.GetGroupMembersAsUsers(groupId.Value);
 				if (isStudent && !users.Select(u => u.Id).Contains(currentUserId))
 					return new HttpStatusCodeResult(HttpStatusCode.Forbidden);
-				if (isInstructor && !groupsRepo.IsGroupAvailableForUser(groupId.Value, User))
+				if (isInstructor && !groupsRepo.IsGroupAvailableForUser(groupId.Value, userId))
 					return new HttpStatusCodeResult(HttpStatusCode.Forbidden);
 			}
 			else
 			{
 				if (isInstructor)
 				{
-					availableGroups = groupsRepo.GetAvailableForUserGroups(courseId, User);
+					availableGroups = groupsRepo.GetAvailableForUserGroups(courseId, userId);
 					if (isAdministrator)
 					{
 						showAllUsers = true;
@@ -797,7 +801,8 @@ namespace uLearn.Web.Controllers
 			{
 				Slides = slides,
 				Users = users,
-				GroupsNames = groupsRepo.GetUsersGroupsNamesAsStrings(courseId, users.Select(u => u.UserId), User, actual: true, archived: false),
+				GroupsNames = groupsRepo.GetUsersGroupsNamesAsStrings(courseId, users.Select(u => u.UserId),
+					User.Identity.GetUserId(), actual: true, archived: false),
 				CourseId = courseId
 			});
 		}
@@ -964,7 +969,7 @@ namespace uLearn.Web.Controllers
 			{
 				User = user,
 				Course = course,
-				GroupsNames = groupsRepo.GetUserGroupsNamesAsString(course.Id, userId, User, actual: true, archived: false),
+				GroupsNames = groupsRepo.GetUserGroupsNamesAsString(course.Id, userId, user.Id, actual: true, archived: false),
 				Slide = slide,
 				SubmissionId = version
 			};

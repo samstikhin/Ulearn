@@ -5,7 +5,6 @@ using System.Data.Entity.Migrations;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Security.Cryptography;
-using System.Security.Principal;
 using System.Text;
 using System.Threading.Tasks;
 using Database.Extensions;
@@ -473,17 +472,18 @@ namespace Database.DataContexts
 			return sb.ToString();
 		}
 
-		public List<NotificationType> GetNotificationTypes(IPrincipal user, string courseId)
+		public List<NotificationType> GetNotificationTypes(string userId, string courseId)
 		{
 			var notificationTypes = GetAllNotificationTypes();
 
+			var courseRole = userRolesRepo.GetRole(userId, courseId);
 			notificationTypes = notificationTypes
-				.Where(t => user.HasAccessFor(courseId, t.GetMinCourseRole()) || t.GetMinCourseRole() == CourseRole.Student)
+				.Where(t => t.GetMinCourseRole() <= courseRole)
 				.OrderByDescending(t => t.GetMinCourseRole())
 				.ThenBy(t => (int)t)
 				.ToList();
 
-			if (!user.IsSystemAdministrator())
+			if (!userRolesRepo.IsSystemAdministrator(userId))
 				notificationTypes = notificationTypes.Where(t => !t.IsForSysAdminsOnly()).ToList();
 
 			return notificationTypes;

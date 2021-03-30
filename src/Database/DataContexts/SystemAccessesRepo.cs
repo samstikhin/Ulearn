@@ -2,9 +2,7 @@
 using System.Collections.Generic;
 using System.Data.Entity;
 using System.Linq;
-using System.Security.Principal;
 using System.Threading.Tasks;
-using Database.Extensions;
 using Database.Models;
 
 namespace Database.DataContexts
@@ -42,11 +40,6 @@ namespace Database.DataContexts
 
 			await db.SaveChangesAsync();
 			return db.SystemAccesses.Include(a => a.GrantedBy).Single(a => a.Id == currentAccess.Id);
-		}
-
-		public bool CanRevokeAccess(string userId, IPrincipal revokedBy)
-		{
-			return revokedBy.IsSystemAdministrator();
 		}
 
 		public async Task<List<SystemAccess>> RevokeAccess(string userId, SystemAccessType accessType)

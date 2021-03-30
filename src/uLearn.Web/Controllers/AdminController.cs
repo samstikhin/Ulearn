@@ -15,7 +15,6 @@ using AntiPlagiarism.Api.Models.Parameters;
 using ApprovalUtilities.Utilities;
 using Database;
 using Database.DataContexts;
-using Database.Extensions;
 using Database.Models;
 using GitCourseUpdater;
 using Microsoft.VisualBasic.FileIO;
@@ -492,7 +491,7 @@ namespace uLearn.Web.Controllers
 			var commentsLikedByUser = commentsRepo.GetCourseCommentsLikedByUser(courseId, userId);
 			var commentsById = comments.ToDictionary(x => x.Id);
 
-			var canViewProfiles = systemAccessesRepo.HasSystemAccess(userId, SystemAccessType.ViewAllProfiles) || User.IsSystemAdministrator();
+			var canViewProfiles = systemAccessesRepo.HasSystemAccess(userId, SystemAccessType.ViewAllProfiles) || userRolesRepo.IsSystemAdministrator(userId);
 
 			return View(new AdminCommentsViewModel
 			{
@@ -523,7 +522,7 @@ namespace uLearn.Web.Controllers
 
 		private ManualCheckingQueueFilterOptions GetManualCheckingFilterOptionsByGroup(string courseId, List<string> groupsIds)
 		{
-			return ControllerUtils.GetFilterOptionsByGroup<ManualCheckingQueueFilterOptions>(groupsRepo, User, courseId, groupsIds);
+			return ControllerUtils.GetFilterOptionsByGroup<ManualCheckingQueueFilterOptions>(groupsRepo, userRolesRepo, User.Identity.GetUserId(), courseId, groupsIds);
 		}
 
 		/* Returns merged checking queue for exercises (code reviews) as well as for quizzes */
@@ -567,7 +566,7 @@ namespace uLearn.Web.Controllers
 			if (!checkings.Any() && !string.IsNullOrEmpty(message))
 				return RedirectToAction("CheckingQueue", new { courseId, group = string.Join(",", groupsIds) });
 
-			var groups = groupsRepo.GetAvailableForUserGroups(courseId, User);
+			var groups = groupsRepo.GetAvailableForUserGroups(courseId, User.Identity.GetUserId());
 			
 			var alreadyChecked = done;
 			Dictionary<int, List<ExerciseCodeReview>> reviews = null;
@@ -667,7 +666,7 @@ namespace uLearn.Web.Controllers
 							message = "already_checked",
 						});
 
-				if (!User.HasAccessFor(checking.CourseId, CourseRole.Instructor))
+				if (!userRolesRepo.HasUserAccessToCourse(User.Identity.GetUserId(), checking.CourseId, CourseRole.Instructor))
 					return new HttpStatusCodeResult(HttpStatusCode.Forbidden);
 
 				if (checking.IsChecked && !recheck)
@@ -780,8 +779,9 @@ namespace uLearn.Web.Controllers
 		[ULearnAuthorize(MinAccessLevel = CourseRole.Instructor)]
 		public ActionResult Users(UserSearchQueryModel queryModel)
 		{
-			var isCourseAdmin = User.HasAccessFor(queryModel.CourseId, CourseRole.CourseAdmin);
-			var canAddInstructors = coursesRepo.HasCourseAccess(User.Identity.GetUserId(), queryModel.CourseId, CourseAccessType.AddAndRemoveInstructors);
+			var userId = User.Identity.GetUserId();
+			var isCourseAdmin = userRolesRepo.HasUserAccessToCourse(userId, queryModel.CourseId, CourseRole.CourseAdmin);
+			var canAddInstructors = coursesRepo.HasCourseAccess(userId, queryModel.CourseId, CourseAccessType.AddAndRemoveInstructors);
 			if (!isCourseAdmin && !canAddInstructors)
 				return HttpNotFound();
 
@@ -793,7 +793,7 @@ namespace uLearn.Web.Controllers
 		[ChildActionOnly]
 		public ActionResult UsersPartial(UserSearchQueryModel queryModel)
 		{
-			var userRolesByEmail = User.IsSystemAdministrator() ? usersRepo.FilterUsersByEmail(queryModel) : null;
+			var userRolesByEmail = userRolesRepo.IsSystemAdministrator(User.Identity.GetUserId()) ? usersRepo.FilterUsersByEmail(queryModel) : null;
 			var userRoles = usersRepo.FilterUsers(queryModel);
 			var tempCourses = tempCoursesRepo.GetTempCourses().Select(s => s.CourseId).ToHashSet();
 			var courses = courseManager.GetCourses()
@@ -811,7 +811,7 @@ namespace uLearn.Web.Controllers
 		{
 			var rolesForUsers = userRolesRepo.GetRolesByUsers(courseId);
 			var currentUserId = User.Identity.GetUserId();
-			var isCourseAdmin = User.HasAccessFor(courseId, CourseRole.CourseAdmin);
+			var isCourseAdmin = userRolesRepo.HasUserAccessToCourse(currentUserId, courseId, CourseRole.CourseAdmin);
 			var canAddInstructors = coursesRepo.HasCourseAccess(currentUserId, courseId, CourseAccessType.AddAndRemoveInstructors);
 			var model = new UserListModel
 			{
@@ -820,7 +820,7 @@ namespace uLearn.Web.Controllers
 				Users = new List<UserModel>(),
 				CanViewAndToggleCourseAccesses = isCourseAdmin,
 				CanViewAndToogleSystemAccesses = false,
-				CanViewProfiles = systemAccessesRepo.HasSystemAccess(currentUserId, SystemAccessType.ViewAllProfiles) || User.IsSystemAdministrator(),
+				CanViewProfiles = systemAccessesRepo.HasSystemAccess(currentUserId, SystemAccessType.ViewAllProfiles) || userRolesRepo.IsSystemAdministrator(currentUserId),
 			};
 			var userIds = new HashSet<string>(userRoles.Select(r => r.UserId));
 			var usersCourseAccesses = coursesRepo.GetCourseAccesses(courseId).Where(a => userIds.Contains(a.UserId))
@@ -869,8 +869,8 @@ namespace uLearn.Web.Controllers
 				model.Users.Add(user);
 			}
 
-			model.UsersGroups = groupsRepo.GetUsersGroupsNamesAsStrings(courseId, userIds, User, actual: true, archived: false);
-			model.UsersArchivedGroups = groupsRepo.GetUsersGroupsNamesAsStrings(courseId, userIds, User, actual: false, archived: true);
+			model.UsersGroups = groupsRepo.GetUsersGroupsNamesAsStrings(courseId, userIds, currentUserId, actual: true, archived: false);
+			model.UsersArchivedGroups = groupsRepo.GetUsersGroupsNamesAsStrings(courseId, userIds, currentUserId, actual: false, archived: true);
 
 			return model;
 		}
@@ -1045,7 +1045,7 @@ namespace uLearn.Web.Controllers
 			if (withGroups)
 			{
 				var usersIds = users.Select(u => u.UserId);
-				var groupsNames = groupsRepo.GetUsersGroupsNamesAsStrings(courseId, usersIds, User, actual: true, archived: false);
+				var groupsNames = groupsRepo.GetUsersGroupsNamesAsStrings(courseId, usersIds, User.Identity.GetUserId(), actual: true, archived: false);
 				foreach (var user in usersList)
 					if (groupsNames.ContainsKey(user.id) && !string.IsNullOrEmpty(groupsNames[user.id]))
 						user.value += $": {groupsNames[user.id]}";
@@ -1204,7 +1204,7 @@ namespace uLearn.Web.Controllers
 			if (certificate == null)
 				return HttpNotFound();
 
-			if (!User.HasAccessFor(certificate.Template.CourseId, CourseRole.CourseAdmin) &&
+			if (!userRolesRepo.HasUserAccessToCourse(User.Identity.GetUserId(), certificate.Template.CourseId, CourseRole.CourseAdmin) &&
 				certificate.InstructorId != User.Identity.GetUserId())
 				return HttpNotFound();
 
@@ -1312,7 +1312,7 @@ namespace uLearn.Web.Controllers
 				}
 			}
 
-			model.GroupsNames = groupsRepo.GetUsersGroupsNamesAsStrings(courseId, allUsersIds, User, actual: true, archived: false);
+			model.GroupsNames = groupsRepo.GetUsersGroupsNamesAsStrings(courseId, allUsersIds, User.Identity.GetUserId(), actual: true, archived: false);
 
 			return View(model);
 		}

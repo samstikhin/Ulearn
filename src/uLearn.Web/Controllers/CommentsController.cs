@@ -1,12 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Net;
-using System.Security.Principal;
 using System.Threading.Tasks;
 using System.Web.Mvc;
 using Database;
 using Database.DataContexts;
-using Database.Extensions;
 using Database.Models;
 using Microsoft.AspNet.Identity;
 using uLearn.Web.FilterAttributes;
@@ -25,6 +23,7 @@ namespace uLearn.Web.Controllers
 		private readonly NotificationsRepo notificationsRepo;
 		private readonly CoursesRepo coursesRepo;
 		private readonly SystemAccessesRepo systemAccessesRepo;
+		private readonly UserRolesRepo userRolesRepo;
 		private readonly UserManager<ApplicationUser> userManager;
 
 		public CommentsController(ULearnDb db)
@@ -34,6 +33,7 @@ namespace uLearn.Web.Controllers
 			notificationsRepo = new NotificationsRepo(db);
 			coursesRepo = new CoursesRepo(db);
 			systemAccessesRepo = new SystemAccessesRepo(db);
+			userRolesRepo = new UserRolesRepo(db);
 		}
 
 		public CommentsController()
@@ -79,22 +79,22 @@ namespace uLearn.Web.Controllers
 			}
 		}
 
-		private bool CanModerateComments(IPrincipal user, string courseId)
+		private bool CanModerateComments(string userId, string courseId)
 		{
-			if (!user.Identity.IsAuthenticated)
+			if (!userRolesRepo.IsSystemAdministrator(userId))
 				return false;
 
-			var hasCourseAccessForCommentEditing = coursesRepo.HasCourseAccess(user.Identity.GetUserId(), courseId, CourseAccessType.EditPinAndRemoveComments);
-			return user.HasAccessFor(courseId, CourseRole.CourseAdmin) || hasCourseAccessForCommentEditing;
+			var hasCourseAccessForCommentEditing = coursesRepo.HasCourseAccess(userId, courseId, CourseAccessType.EditPinAndRemoveComments);
+			return userRolesRepo.HasUserAccessToCourse(userId, courseId, CourseRole.CourseAdmin) || hasCourseAccessForCommentEditing;
 		}
 
-		private bool CanAddCommentHere(IPrincipal user, string courseId, bool isReply)
+		private bool CanAddCommentHere(string userId, string courseId, bool isReply)
 		{
 			if (!User.Identity.IsAuthenticated)
 				return false;
 
 			var commentsPolicy = commentsRepo.GetCommentsPolicy(courseId);
-			var isInstructor = user.HasAccessFor(courseId, CourseRole.Instructor);
+			var isInstructor = userRolesRepo.HasUserAccessToCourse(userId, courseId, CourseRole.Instructor);
 
 			if (!isInstructor && !commentsPolicy.IsCommentsEnabled)
 				return false;
@@ -105,19 +105,19 @@ namespace uLearn.Web.Controllers
 			return true;
 		}
 
-		private bool CanViewAndAddCommentsForInstructorsOnly(IPrincipal user, string courseId)
+		private bool CanViewAndAddCommentsForInstructorsOnly(string userId, string courseId)
 		{
-			return user.HasAccessFor(courseId, CourseRole.Instructor);
+			return userRolesRepo.HasUserAccessToCourse(userId, courseId, CourseRole.Instructor);
 		}
 
-		private bool CanAddCommentNow(IPrincipal user, string courseId)
+		private bool CanAddCommentNow(string userId, string courseId)
 		{
 			// Instructors have unlimited comments
-			if (user.HasAccessFor(courseId, CourseRole.Instructor))
+			if (userRolesRepo.HasUserAccessToCourse(userId, courseId, CourseRole.Instructor))
 				return true;
 
 			var commentsPolicy = commentsRepo.GetCommentsPolicy(courseId);
-			return !commentsRepo.IsUserAddedMaxCommentsInLastTime(user.Identity.GetUserId(),
+			return !commentsRepo.IsUserAddedMaxCommentsInLastTime(userId,
 				commentsPolicy.MaxCommentsCountInLastTime,
 				commentsPolicy.LastTimeForMaxCommentsLimit);
 		}
@@ -132,11 +132,12 @@ namespace uLearn.Web.Controllers
 			var parentCommentIdInt = -1;
 			if (parentCommentId != null)
 				int.TryParse(parentCommentId, out parentCommentIdInt);
+			var userId = User.Identity.GetUserId();
 
-			if (!CanAddCommentHere(User, courseId, parentCommentIdInt != -1))
+			if (!CanAddCommentHere(userId, courseId, parentCommentIdInt != -1))
 				return new HttpStatusCodeResult(HttpStatusCode.Forbidden);
 
-			if (!CanAddCommentNow(User, courseId))
+			if (!CanAddCommentNow(userId, courseId))
 			{
 				return Json(new
 				{
@@ -154,19 +155,18 @@ namespace uLearn.Web.Controllers
 				});
 			}
 
-			if (forInstructorsOnly && !CanViewAndAddCommentsForInstructorsOnly(User, courseId))
+			if (forInstructorsOnly && !CanViewAndAddCommentsForInstructorsOnly(userId, courseId))
 			{
 				forInstructorsOnly = false;
 			}
 
-			var comment = await commentsRepo.AddComment(User, courseId, slideId, parentCommentIdInt, forInstructorsOnly, commentText);
+			var comment = await commentsRepo.AddComment(userId, courseId, slideId, parentCommentIdInt, forInstructorsOnly, commentText);
 			if (comment.IsApproved)
 				await NotifyAboutNewComment(comment);
-			var canReply = CanAddCommentHere(User, courseId, isReply: true);
+			var canReply = CanAddCommentHere(userId, courseId, isReply: true);
 
-			var userId = User.Identity.GetUserId();
-			var canViewAuthorSubmissions = coursesRepo.HasCourseAccess(userId, courseId, CourseAccessType.ViewAllStudentsSubmissions) || User.HasAccessFor(courseId, CourseRole.CourseAdmin);
-			var canViewProfiles = systemAccessesRepo.HasSystemAccess(userId, SystemAccessType.ViewAllProfiles) || User.IsSystemAdministrator();
+			var canViewAuthorSubmissions = coursesRepo.HasCourseAccess(userId, courseId, CourseAccessType.ViewAllStudentsSubmissions) || userRolesRepo.HasUserAccessToCourse(userId, courseId, CourseRole.CourseAdmin);
+			var canViewProfiles = systemAccessesRepo.HasSystemAccess(userId, SystemAccessType.ViewAllProfiles) || userRolesRepo.IsSystemAdministrator(userId);
 
 			return PartialView("_Comment", new CommentViewModel
 			{
@@ -176,7 +176,7 @@ namespace uLearn.Web.Controllers
 				Replies = new List<CommentViewModel>(),
 				IsCommentVisibleForUser = true,
 				CanEditAndDeleteComment = true,
-				CanModerateComment = User.HasAccessFor(courseId, CourseRole.Instructor),
+				CanModerateComment = userRolesRepo.HasUserAccessToCourse(userId, courseId, CourseRole.Instructor),
 				CanReply = canReply,
 				CurrentUser = userManager.FindById(User.Identity.GetUserId()),
 				CanViewAuthorProfile = canViewProfiles,
@@ -253,7 +253,7 @@ namespace uLearn.Web.Controllers
 			if (comment == null)
 				return HttpNotFound();
 
-			if (!CanModerateComments(User, comment.CourseId))
+			if (!CanModerateComments(User.Identity.GetUserId(), comment.CourseId))
 				return new HttpStatusCodeResult(HttpStatusCode.Forbidden);
 
 			await commentsRepo.ApproveComment(commentId, isApproved);
@@ -271,19 +271,19 @@ namespace uLearn.Web.Controllers
 			if (comment == null)
 				return HttpNotFound();
 
-			if (!CanModerateComments(User, comment.CourseId))
+			if (!CanModerateComments(User.Identity.GetUserId(), comment.CourseId))
 				return new HttpStatusCodeResult(HttpStatusCode.Forbidden);
 
 			await commentsRepo.PinComment(commentId, isPinned);
 			return new HttpStatusCodeResult(HttpStatusCode.OK);
 		}
 
-		private bool CanEditAndDeleteComment(IPrincipal user, Comment comment)
+		private bool CanEditAndDeleteComment(string userId, Comment comment)
 		{
 			if (comment == null)
 				return false;
 
-			return CanModerateComments(user, comment.CourseId) || user.Identity.GetUserId() == comment.AuthorId;
+			return CanModerateComments(userId, comment.CourseId) || userId == comment.AuthorId;
 		}
 
 		[HttpPost]
@@ -292,7 +292,7 @@ namespace uLearn.Web.Controllers
 		public async Task<ActionResult> DeleteComment(int commentId)
 		{
 			var comment = commentsRepo.FindCommentById(commentId);
-			if (!CanEditAndDeleteComment(User, comment))
+			if (!CanEditAndDeleteComment(User.Identity.GetUserId(), comment))
 				return new HttpStatusCodeResult(HttpStatusCode.Forbidden);
 
 			await commentsRepo.DeleteComment(commentId);
@@ -305,7 +305,7 @@ namespace uLearn.Web.Controllers
 		public async Task<ActionResult> RestoreComment(int commentId)
 		{
 			var comment = commentsRepo.FindCommentById(commentId);
-			if (!CanEditAndDeleteComment(User, comment))
+			if (!CanEditAndDeleteComment(User.Identity.GetUserId(), comment))
 				return new HttpStatusCodeResult(HttpStatusCode.Forbidden);
 
 			await commentsRepo.RestoreComment(commentId);
@@ -319,7 +319,7 @@ namespace uLearn.Web.Controllers
 		public async Task<ActionResult> EditCommentText(int commentId, string newText)
 		{
 			var comment = commentsRepo.FindCommentById(commentId);
-			if (!CanEditAndDeleteComment(User, comment))
+			if (!CanEditAndDeleteComment(User.Identity.GetUserId(), comment))
 				return new HttpStatusCodeResult(HttpStatusCode.Forbidden);
 
 			var newComment = await commentsRepo.EditCommentText(commentId, newText);
@@ -332,7 +332,7 @@ namespace uLearn.Web.Controllers
 		public async Task<ActionResult> MarkAsCorrectAnswer(int commentId, bool isCorrect = true)
 		{
 			var comment = commentsRepo.FindCommentById(commentId);
-			if (!CanEditAndDeleteComment(User, comment))
+			if (!CanEditAndDeleteComment(User.Identity.GetUserId(), comment))
 				return new HttpStatusCodeResult(HttpStatusCode.Forbidden);
 
 			await commentsRepo.MarkCommentAsCorrectAnswer(commentId, isCorrect);
